@@ -1,0 +1,25 @@
+# Build artifacts
+/src-tauri/target/
+/src-tauri/gen/
+/frontend/node_modules/
+/frontend/dist/
+/target-*/
+/build.log
+
+# Your own settings and library data - never commit these
+/config/config.toml
+/data/
+*.db
+*.db-wal
+*.db-shm
+
+# Local tooling / scratch
+/.hermes/
+/frontend/vite.test.config.*
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/

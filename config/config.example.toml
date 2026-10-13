@@ -1,0 +1,26 @@
+# photoApp configuration
+#
+# Copy this file to config.toml (or just start the app once: it creates
+# config.toml pointing at your Pictures folder) and edit it.
+# Restart photoApp after changing it.
+#
+# Use forward slashes in paths, e.g. "D:/Photos" (a backslash must be doubled).
+# NOTE: top-level keys must come BEFORE the [[roots]] tables.
+
+# Folders to skip while scanning (path prefixes, case-insensitive).
+exclusions = [
+  # "D:/Photos/Temp",
+]
+
+# Optional: ffmpeg for video thumbnails. Default: "ffmpeg" on PATH.
+# ffmpeg = "C:/tools/ffmpeg/bin/ffmpeg.exe"
+
+# One [[roots]] block per library folder. The first root is the default
+# destination for "move to year folder" and for staged duplicates.
+[[roots]]
+name = "Photos"
+path = "D:/Photos"
+
+# [[roots]]
+# name = "Phone backup"
+# path = "E:/Phone"

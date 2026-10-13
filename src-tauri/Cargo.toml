@@ -1,0 +1,30 @@
+[package]
+name = "photoapp"
+version = "0.4.1"
+edition = "2024"
+description = "Desktop photo & video library manager with tags, notes, search, safe file management and an optional local AI assistant"
+license = "MIT"
+authors = ["Lane Palmer"]
+
+[dependencies]
+image = "0.25.10"
+rayon = "1.12.0"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.11.0"
+toml = "1.1.8"
+tauri = { version = "2.12", features = ["protocol-asset"] }
+notify = "8.2"
+trash = "5.2.9"
+ureq = { version = "2", features = ["json"] }
+base64 = "0.22"
+
+[features]
+# Embed frontend/dist into the exe so a plain `cargo build --release` runs
+# standalone (without this, Tauri loads http://localhost:1420 and needs Vite).
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
