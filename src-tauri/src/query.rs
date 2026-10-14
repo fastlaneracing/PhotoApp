@@ -124,6 +124,8 @@ pub struct Filter {
     pub exclude_categories: Option<Vec<i64>>,
     pub album: Option<i64>,
     pub untagged: Option<bool>,
+    /// HIDE every item that has any tag (a toggle that stays on across views)
+    pub hide_tagged: Option<bool>,
     pub has_notes: Option<bool>,
     pub favorite: Option<bool>,
     pub min_rating: Option<i64>,
@@ -426,7 +428,7 @@ fn build_where(filter: &Filter) -> (String, Vec<Value>) {
             params.len()
         ));
     }
-    if filter.untagged == Some(true) {
+    if filter.untagged == Some(true) || filter.hide_tagged == Some(true) {
         clauses.push("NOT EXISTS (SELECT 1 FROM media_tags mt WHERE mt.media_id=m.id)".into());
     }
     if let Some(h) = filter.has_notes {

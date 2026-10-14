@@ -6,6 +6,7 @@
     items = [],
     onopen = () => {},
     onselect = () => {},
+    oncontext = () => {},
     selected = new Set(),
     size = 176,
     scrollToIndex = null,
@@ -76,6 +77,7 @@
             item={it}
             {onopen}
             onselect={(e) => onselect(it.id, v.r * cols + j, e)}
+            oncontext={(e) => oncontext(it.id, v.r * cols + j, e)}
             selected={selected.has(it.id)}
             thumbH={THUMB_H}
             cellW={CELL_W}

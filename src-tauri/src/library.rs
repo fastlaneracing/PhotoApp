@@ -1069,6 +1069,134 @@ fn bulk_undo(conn: &mut Connection, ids: &[i64]) -> Value {
 }
 
 // ---------------------------------------------------------------------------
+// Copy to… (export copies anywhere; the library itself is untouched)
+// ---------------------------------------------------------------------------
+
+/// True when two files hold the same bytes (size check first, then a stream compare).
+fn same_content(a: &Path, b: &Path) -> bool {
+    use std::io::Read;
+    let (Ok(ma), Ok(mb)) = (std::fs::metadata(a), std::fs::metadata(b)) else { return false };
+    if ma.len() != mb.len() {
+        return false;
+    }
+    let (Ok(fa), Ok(fb)) = (std::fs::File::open(a), std::fs::File::open(b)) else { return false };
+    let (mut ra, mut rb) = (std::io::BufReader::new(fa), std::io::BufReader::new(fb));
+    let (mut ba, mut bb) = (vec![0u8; 1 << 16], vec![0u8; 1 << 16]);
+    loop {
+        let na = match ra.read(&mut ba) { Ok(n) => n, Err(_) => return false };
+        if na == 0 {
+            return rb.read(&mut bb).map(|n| n == 0).unwrap_or(false);
+        }
+        if rb.read_exact(&mut bb[..na]).is_err() || ba[..na] != bb[..na] {
+            return false;
+        }
+    }
+}
+
+/// Where to copy `src` in `dir`: walks `name`, `stem (2).ext`, `(3)`…
+/// Ok(free path) = first unused name; Err(path) = that name already holds
+/// identical content (nothing to copy).
+fn copy_target(dir: &Path, fname: &str, src: &Path) -> Result<PathBuf, PathBuf> {
+    let (stem, ext) = match fname.rfind('.') {
+        Some(i) if i > 0 => (&fname[..i], &fname[i..]),
+        _ => (fname, ""),
+    };
+    for n in 1.. {
+        let p = if n == 1 { dir.join(fname) } else { dir.join(format!("{stem} ({n}){ext}")) };
+        if !p.exists() {
+            return Ok(p);
+        }
+        if same_content(src, &p) {
+            return Err(p);
+        }
+    }
+    unreachable!()
+}
+
+/// Copy the selected items' files into `dir` (any folder, inside the library or
+/// not). Never overwrites: an identical file already there is skipped, a
+/// different file with the same name gets " (2)" etc. The originals, the
+/// catalog rows and the annotations are not touched.
+fn copy_to(conn: &Connection, ids: &[i64], dir: &str) -> Result<Value, String> {
+    let dir_s = dir.trim().trim_end_matches(['\\', '/']).to_string();
+    if dir_s.is_empty() {
+        return Err("choose a destination folder".into());
+    }
+    let dest = PathBuf::from(if dir_s.ends_with(':') { format!("{dir_s}\\") } else { dir_s.clone() });
+    if !dest.is_dir() {
+        return Err(format!("destination folder not found: {dir_s}"));
+    }
+    let (mut copied, mut renamed, mut same, mut failed, mut bytes) = (0usize, 0usize, 0usize, 0usize, 0u64);
+    let mut results = vec![];
+    for id in ids {
+        // First copy that is actually on disk (canonical preferred).
+        let paths: Vec<String> = conn
+            .prepare(
+                "SELECT path FROM occurrence WHERE media_id = ?1 AND missing = 0
+                 ORDER BY CASE WHEN is_canonical = 1 THEN 0 ELSE 1 END, id",
+            )
+            .and_then(|mut st| st.query_map([id], |r| r.get(0)).map(|it| it.flatten().collect()))
+            .unwrap_or_default();
+        let Some(src) = paths.iter().map(PathBuf::from).find(|p| p.is_file()) else {
+            failed += 1;
+            results.push(json!({ "id": id, "ok": false, "error": "no copy on disk" }));
+            continue;
+        };
+        let fname = src.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
+        let target = match copy_target(&dest, &fname, &src) {
+            Ok(t) => t,
+            Err(existing) => {
+                same += 1;
+                results.push(json!({ "id": id, "ok": true, "skipped": true, "from": src, "to": existing }));
+                continue;
+            }
+        };
+        match std::fs::copy(&src, &target) {
+            Ok(n) => {
+                // Keep the original's modified date (Windows already does; this
+                // covers other platforms).
+                if let Ok(m) = std::fs::metadata(&src).and_then(|m| m.modified()) {
+                    if let Ok(f) = std::fs::OpenOptions::new().write(true).open(&target) {
+                        let _ = f.set_modified(m);
+                    }
+                }
+                copied += 1;
+                bytes += n;
+                if target.file_name().map(|f| f.to_string_lossy() != fname.as_str()).unwrap_or(false) {
+                    renamed += 1;
+                }
+                results.push(json!({ "id": id, "ok": true, "from": src, "to": target }));
+            }
+            Err(e) => {
+                // `target` was a free name, so anything there now is our own partial copy.
+                let _ = std::fs::remove_file(&target);
+                failed += 1;
+                results.push(json!({ "id": id, "ok": false, "from": src, "to": target, "error": e.to_string() }));
+            }
+        }
+    }
+    let dir_out = dest.to_string_lossy().to_string();
+    log(conn, "copy", copied, &format!("{copied} copied to {dir_out}, {same} already there, {failed} failed"));
+    Ok(json!({ "dir": dir_out, "copied": copied, "renamed": renamed, "alreadyThere": same,
+               "failed": failed, "bytes": bytes, "results": results }))
+}
+
+/// Native "choose folder" dialog, opened in `start` when that folder exists.
+/// The Tauri command adds the app window as parent so the dialog is modal.
+pub fn folder_dialog(start: Option<&str>, title: &str) -> rfd::FileDialog {
+    let mut d = rfd::FileDialog::new().set_title(title);
+    if let Some(s) = start.filter(|s| !s.is_empty() && Path::new(s).is_dir()) {
+        d = d.set_directory(s);
+    }
+    d
+}
+
+/// Show the dialog: { path } or { path: null } when cancelled.
+pub fn pick_folder(d: rfd::FileDialog) -> Value {
+    json!({ "path": d.pick_folder().map(|p| crate::paths::canon(&p.to_string_lossy())) })
+}
+
+// ---------------------------------------------------------------------------
 // Delete (Recycle Bin) + restore
 // ---------------------------------------------------------------------------
 
@@ -1548,6 +1676,11 @@ pub fn call(conn: &mut Connection, cfg: &Config, cmd: &str, a: &Value) -> Result
         "bulk.movePlan" => bulk_move(conn, cfg, &ids(a)?, &text(a, "dir")?, false),
         "bulk.moveApply" => bulk_move(conn, cfg, &ids(a)?, &text(a, "dir")?, true),
         "bulk.undo" => Ok(bulk_undo(conn, &ids(a)?)),
+        "items.copyTo" => copy_to(conn, &ids(a)?, &text(a, "dir")?),
+        "pickFolder" => Ok(pick_folder(folder_dialog(
+            a.get("start").and_then(|v| v.as_str()),
+            a.get("title").and_then(|v| v.as_str()).unwrap_or("Choose a folder"),
+        ))),
         "items.delete" => delete_items(conn, cfg, &ids(a)?),
         "items.restore" => restore_items(conn, cfg, &ids(a)?),
         "reveal" => reveal(&text(a, "path")?, false),

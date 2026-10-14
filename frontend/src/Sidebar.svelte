@@ -61,6 +61,7 @@
     else cur.add(t.id);
     const next = { ...filter, tags: [...cur] };
     if (!next.tags.length) delete next.tags;
+    else delete next.hideTagged; // can't show a tag while hiding all tagged
     delete next.category;
     if (next.excludeTags?.includes(t.id)) {
       next.excludeTags = next.excludeTags.filter((x) => x !== t.id);
@@ -133,7 +134,13 @@
     </button>
   {/each}
 
-  <div class="h">Categories & tags</div>
+  <div class="h">Categories & tags
+    {#if lib.tags.length}
+      <button class="hideall" class:active={filter.hideTagged}
+        onclick={() => { const n = { ...filter }; if (n.hideTagged) delete n.hideTagged; else { n.hideTagged = true; delete n.tags; delete n.tagMode; delete n.category; } onfilter(n); }}
+        title={filter.hideTagged ? 'Show tagged items again' : 'Hide every item that has any tag, in every view'}>{filter.hideTagged ? 'all hidden' : 'hide all'}</button>
+    {/if}
+  </div>
   {#if lib.tags.length}<div class="hint">Click a tag to show only it · <b>hide</b> to take it out of every view</div>{/if}
   {#if lib.tags.length > 12}
     <input class="tf" placeholder="Filter tags…" bind:value={tagFilter} />
@@ -147,7 +154,7 @@
         <button class="caret" onclick={() => (collapsed[key] = !collapsed[key])}>{collapsed[key] ? '▸' : '▾'}</button>
         {#if g.cat}
           {@const catHidden = (filter.excludeCategories || []).includes(g.cat.id)}
-          <button class="catname" class:on={filter.category === g.cat.id} class:hidden={catHidden} onclick={() => onfilter(scoped({ category: g.cat.id }))} title="Show only items tagged in {g.cat.name}">
+          <button class="catname" class:on={filter.category === g.cat.id} class:hidden={catHidden} onclick={() => { const n = scoped({ category: g.cat.id }); delete n.hideTagged; onfilter(n); }} title="Show only items tagged in {g.cat.name}">
             <span class="dot" style="background: {g.cat.color ? colorHex(g.cat.color) : '#5a6270'}"></span>{g.cat.name}
           </button>
           <button class="hide" class:active={catHidden} onclick={() => toggleHideCategory(g.cat)}
@@ -220,6 +227,12 @@
   }
   .trow:hover .hide, .cat:hover .hide { visibility: visible; }
   .hide:hover { color: var(--text); border-color: var(--border); }
+  .hideall {
+    margin-left: auto; background: none; border: 1px solid transparent; color: #6b7383; font-size: 10.5px;
+    border-radius: 9px; padding: 0 7px; height: 18px; cursor: pointer; text-transform: none; letter-spacing: 0; font-weight: 400;
+  }
+  .hideall:hover { color: var(--text); border-color: var(--border); }
+  .hideall.active { color: #f4a620; border-color: #6b5520; background: #2a2210; }
   .hide.active { visibility: visible; color: #f4a620; border-color: #6b5520; background: #2a2210; }
   .hint b { color: #9aa0ab; font-weight: 600; }
   .cat { display: flex; align-items: center; gap: 2px; margin-top: 2px; }

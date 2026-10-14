@@ -43,6 +43,7 @@
     if (filter.favorite) chips.push({ key: 'favorite', label: '♥ favorites' });
     if (filter.hasNotes) chips.push({ key: 'hasNotes', label: '✎ has notes' });
     if (filter.untagged) chips.push({ key: 'untagged', label: 'untagged' });
+    if (filter.hideTagged) chips.push({ key: 'hideTagged', label: 'hiding all tagged', hide: true });
     if (filter.minRating) chips.push({ key: 'minRating', label: `${'★'.repeat(filter.minRating)}+` });
     if (filter.color) chips.push({ key: 'color', label: `label: ${filter.color}` });
     if (filter.dateFrom) chips.push({ key: 'dateFrom', label: `from ${filter.dateFrom}` });
@@ -75,6 +76,20 @@
       if (!next.tags.length) delete next.tags;
       onfilter(next);
     } else set(key, '');
+  }
+
+  // Hide every tagged item. Showing only certain tags/categories can't work at
+  // the same time, so those filters are dropped when hiding is turned on.
+  function toggleHideTagged() {
+    const next = { ...filter };
+    if (next.hideTagged) delete next.hideTagged;
+    else {
+      next.hideTagged = true;
+      delete next.tags;
+      delete next.tagMode;
+      delete next.category;
+    }
+    onfilter(next);
   }
 
   function set(key, value) {
@@ -131,6 +146,11 @@
         </button>
       {/each}
     </div>
+
+    <button class="hidetag" class:on={filter.hideTagged} onclick={toggleHideTagged}
+      title={filter.hideTagged ? 'Show tagged items again' : 'Hide every item that already has a tag (stays on while you switch views)'}>
+      {filter.hideTagged ? '◌ Tagged hidden' : '◌ Hide tagged'}{#if stats?.tagged}<span class="kn">{stats.tagged.toLocaleString()}</span>{/if}
+    </button>
 
     <label class="sel">
       <span>year</span>
@@ -238,6 +258,13 @@
   .kind button:last-child { border-right: 0; }
   .kind button:hover { color: var(--text); }
   .kind button.on { background: #263041; color: var(--text); box-shadow: inset 0 -2px 0 var(--accent); }
+  .hidetag {
+    align-self: flex-end; display: flex; gap: 6px; align-items: center; white-space: nowrap;
+    background: var(--bg); color: var(--muted); border: 1px solid var(--border); border-radius: 8px;
+    padding: 7px 12px; font-size: 12.5px; cursor: pointer;
+  }
+  .hidetag:hover { color: var(--text); }
+  .hidetag.on { color: #f4a620; border-color: #6b5520; background: #2a2210; }
   .kn { font-size: 10.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
   .sel { display: flex; flex-direction: column; gap: 2px; }
   .sel > span { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px; }

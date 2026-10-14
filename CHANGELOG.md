@@ -2,6 +2,15 @@
 
 All notable changes to photoApp. Versions follow [Semantic Versioning](https://semver.org).
 
+## [0.4.3] - 2026-10-13
+### Added
+- **Hide tagged**: one button in the filter bar (or *hide all* next to *Categories & tags* in the sidebar) hides every item that already has a tag. It stays on while you switch views, folders, years, albums or searches, so you can work through what's left to tag. An orange *hiding all tagged* chip shows it's on; click ✕ on the chip or the button again to show tagged items. Choosing a tag or category to show turns it off.
+
+## [0.4.2] - 2026-10-13
+### Added
+- Right-click menu on photos: **Copy to…**, View, Show in Explorer, Open file, Delete / Restore. Right-clicking a photo outside the selection selects just that photo.
+- **Copy to…** (right-click, Inspector, or bulk panel) opens a Windows folder picker and copies the selected files to any folder (USB drive, network share, a client folder). Originals, notes and tags are untouched. Never overwrites: identical files already there are skipped, different files with the same name are saved as `name (2).jpg`. Modified dates are kept. The picker reopens in the last folder used.
+
 ## [0.4.1] - 2026-10-13
 ### Added
 - Portable install: the app finds its own folder (no hardcoded paths), creates `config/config.toml` on first run pointing at your Pictures folder, and reads the ffmpeg location from `PHOTOAPP_FFMPEG`, `config.toml` or `PATH`.

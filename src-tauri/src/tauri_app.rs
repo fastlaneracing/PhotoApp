@@ -46,6 +46,19 @@ pub async fn call(cmd: String, args: Option<serde_json::Value>) -> Result<serde_
     .map_err(|e| e.to_string())?
 }
 
+/// Native folder picker (Copy to…), parented to the app window so it stays on
+/// top and modal. Returns { path } or { path: null } when cancelled.
+#[tauri::command]
+pub async fn pick_folder(window: tauri::Window, start: Option<String>, title: Option<String>) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let d = crate::library::folder_dialog(start.as_deref(), title.as_deref().unwrap_or("Choose a folder"))
+            .set_parent(&window);
+        crate::library::pick_folder(d)
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
 /// Catalog statistics for the header bar.
 #[tauri::command]
 pub fn stats() -> Result<serde_json::Value, String> {
@@ -205,6 +218,7 @@ pub fn run() {
             catalog_items,
             item_detail,
             call,
+            pick_folder,
             stats,
             query,
             facets,

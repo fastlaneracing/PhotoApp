@@ -1,6 +1,7 @@
 <script>
   import { queryItems, stats, onCatalogChanged, isTauri, call, cleanFilter } from './lib.js';
-  import { reloadLibrary, toast, toasts, deleteItems, ai, refreshAi, onAiProgress } from './store.svelte.js';
+  import { reloadLibrary, toast, toasts, deleteItems, restoreItems, copyItemsTo, ai, refreshAi, onAiProgress } from './store.svelte.js';
+  import ContextMenu from './ContextMenu.svelte';
   import FilterBar from './FilterBar.svelte';
   import Grid from './Grid.svelte';
   import Viewer from './Viewer.svelte';
@@ -81,6 +82,39 @@
       anchor = idx;
     }
   }
+
+  // Right-click: act on the selection; a tile outside it becomes the selection
+  // (same as Explorer).
+  let menu = $state(null); // { x, y }
+  function oncontext(id, idx, e) {
+    if (!selected.has(id)) onselect(id, idx, null);
+    menu = { x: e.clientX, y: e.clientY };
+  }
+  const menuItems = $derived.by(() => {
+    if (!menu) return [];
+    const sel = items.filter((i) => selected.has(i.id));
+    const onDisk = sel.filter((i) => !i.missing && !i.deleted);
+    const one = sel.length === 1 ? sel[0] : null;
+    const n = onDisk.length;
+    const out = [
+      { label: n > 1 ? `Copy ${n.toLocaleString()} items to…` : 'Copy to…', run: () => copyItemsTo(onDisk), disabled: !n },
+      { sep: true },
+      { label: 'View', hint: 'Enter', run: () => openItem(sel[0].id), disabled: !sel.length },
+    ];
+    if (isTauri()) {
+      out.push(
+        { label: 'Show in Explorer', run: () => call('reveal', { path: one.path }).catch((e) => toast(String(e), 'err')), disabled: !one || one.missing },
+        { label: 'Open file', run: () => call('openFile', { path: one.path }).catch((e) => toast(String(e), 'err')), disabled: !one || one.missing },
+      );
+    }
+    out.push({ sep: true });
+    if (sel.length && sel.every((i) => i.deleted)) {
+      out.push({ label: 'Restore', run: () => restoreItems(sel.map((i) => i.id), refresh) });
+    } else {
+      out.push({ label: n > 1 ? `Delete ${n.toLocaleString()} items` : 'Delete', hint: 'Del', danger: true, disabled: !n, run: () => deleteItems(onDisk, refresh) });
+    }
+    return out;
+  });
 
   // After an edit: notes only patch the tile; everything else re-queries so
   // filtered views (e.g. Untagged) stay truthful.
@@ -286,7 +320,7 @@
           {:else if items.length === 0}
             <div class="empty">No items match the current filters.</div>
           {:else}
-            <Grid {items} onopen={openItem} {onselect} {selected} {size} scrollToIndex={cursor} />
+            <Grid {items} onopen={openItem} {onselect} {oncontext} {selected} {size} scrollToIndex={cursor} />
           {/if}
         </main>
       </div>
@@ -303,6 +337,12 @@
       onnext={() => stepItem(1)}
       onchange={onAnnotChange}
     />
+  {/if}
+
+  {#if menu}
+    <ContextMenu x={menu.x} y={menu.y} items={menuItems}
+      title={selected.size > 1 ? `${selected.size.toLocaleString()} selected` : ''}
+      onclose={() => (menu = null)} />
   {/if}
 
   <div class="toasts">

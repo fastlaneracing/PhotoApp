@@ -1,6 +1,6 @@
 <script>
   import { mediaUrl, call, isTauri } from './lib.js';
-  import { toast, deleteItems, restoreItems } from './store.svelte.js';
+  import { toast, deleteItems, restoreItems, copyItemsTo } from './store.svelte.js';
   import Annotator from './Annotator.svelte';
   import BulkEditor from './BulkEditor.svelte';
   import ItemAI from './ItemAI.svelte';
@@ -45,6 +45,7 @@
         <button class="btn" onclick={() => reveal(false)} disabled={item.missing}>Show in Explorer</button>
         <button class="btn" onclick={() => reveal(true)} disabled={item.missing}>Open file</button>
       {/if}
+      <button class="btn" onclick={() => copyItemsTo([item])} disabled={item.missing || item.deleted} title="Copy the file to another folder">Copy to…</button>
       {#if item.deleted}
         <button class="btn restore" onclick={() => restoreItems([item.id], ondone)}>Restore</button>
       {:else if !item.missing}

@@ -1,7 +1,7 @@
 // Shared library state (tags, categories, albums, saved searches) used by the
 // sidebar, inspector, filter chips and the Manage view. Reloaded after any
 // edit that can change names or counts.
-import { call } from './lib.js';
+import { call, pickFolder } from './lib.js';
 
 export const lib = $state({
   tags: [],
@@ -100,6 +100,48 @@ export async function restoreItems(ids, onDone = () => {}) {
     toast(String(e).replace(/^Error: /, ''), 'err', 10000);
   }
   onDone();
+}
+
+// Copy to…: pick a folder (opens where the last copy went), then copy the
+// files there. Originals and annotations are untouched; nothing is overwritten.
+export async function copyItemsTo(items) {
+  const ids = items.filter((i) => !i.missing && !i.deleted).map((i) => i.id);
+  if (!ids.length) {
+    toast('Nothing to copy — the selected items are not on disk', 'warn');
+    return;
+  }
+  let last = '';
+  try { last = localStorage.getItem('pa.copyDir') || ''; } catch {}
+  let dir;
+  try {
+    dir = await pickFolder(last, `Copy ${ids.length.toLocaleString()} item${ids.length === 1 ? '' : 's'} to…`);
+  } catch (e) {
+    toast(String(e).replace(/^Error: /, ''), 'err', 8000);
+    return;
+  }
+  if (!dir) return; // cancelled
+  try { localStorage.setItem('pa.copyDir', dir); } catch {}
+  toast(`Copying ${ids.length.toLocaleString()} item${ids.length === 1 ? '' : 's'} to ${dir}…`, 'ok', 4000);
+  try {
+    const r = await call('items.copyTo', { ids, dir });
+    const parts = [`Copied ${r.copied.toLocaleString()} file${r.copied === 1 ? '' : 's'} (${fmtSize(r.bytes)}) to ${r.dir}`];
+    if (r.renamed) parts.push(`${r.renamed} renamed to avoid overwriting`);
+    if (r.alreadyThere) parts.push(`${r.alreadyThere} already there`);
+    if (r.failed) parts.push(`${r.failed} failed`);
+    toast(parts.join(' — '), r.failed ? 'warn' : 'ok', 10000, {
+      label: 'Open folder',
+      run: () => call('openFile', { path: r.dir }).catch(() => {}),
+    });
+    if (r.failed) console.warn('copy failures', r.results.filter((x) => !x.ok));
+  } catch (e) {
+    toast(String(e).replace(/^Error: /, ''), 'err', 10000);
+  }
+}
+
+function fmtSize(b) {
+  if (b >= 1e9) return (b / 1e9).toFixed(2) + ' GB';
+  if (b >= 1e6) return (b / 1e6).toFixed(1) + ' MB';
+  return Math.max(1, Math.round(b / 1e3)) + ' KB';
 }
 
 // ---------------------------------------------------------------------------

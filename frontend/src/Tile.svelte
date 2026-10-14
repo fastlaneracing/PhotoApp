@@ -2,7 +2,7 @@
   import { mediaUrl } from './lib.js';
   import { colorHex } from './store.svelte.js';
 
-  let { item, onopen, onselect = () => {}, selected = false, thumbH = 160, cellW = 176 } = $props();
+  let { item, onopen, onselect = () => {}, oncontext = () => {}, selected = false, thumbH = 160, cellW = 176 } = $props();
 
   let thumbSrc = $derived(item.thumbPath ? mediaUrl(item.thumbPath) : null);
   let broken = $state(false);
@@ -27,6 +27,7 @@
   style="width: {cellW}px;"
   onclick={(e) => onselect(e)}
   ondblclick={() => onopen(item.id)}
+  oncontextmenu={(e) => { e.preventDefault(); oncontext(e); }}
   title={item.path + (item.tags ? '\nTags: ' + item.tags : '')}
 >
   <div class="thumb" style="height: {thumbH}px;">

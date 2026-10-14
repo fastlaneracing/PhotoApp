@@ -2,7 +2,7 @@
   // Edit many items at once: tags, rating, favorite, color label, append a
   // note, album membership, move to a folder (dry-run -> apply -> undo).
   import { call } from './lib.js';
-  import { lib, reloadLibrary, toast, tagLabel, COLORS, deleteItems, restoreItems, ai, reviewWithAi } from './store.svelte.js';
+  import { lib, reloadLibrary, toast, tagLabel, COLORS, deleteItems, restoreItems, copyItemsTo, ai, reviewWithAi } from './store.svelte.js';
   import TagInput from './TagInput.svelte';
 
   let { ids = [], onchange = () => {}, items = [], ondone = () => {} } = $props();
@@ -208,6 +208,14 @@
     {#each lib.albums as a (a.id)}<option value={a.id}>{a.name} ({a.count})</option>{/each}
     <option value="__new">+ New album from selection…</option>
   </select>
+
+  <div class="sec">Copy files</div>
+  <div class="row">
+    <button class="btn sm" disabled={!deletable.length} onclick={() => copyItemsTo(deletable)}
+      title="Copy the selected files to any folder (USB drive, share, etc.). Originals stay put.">
+      Copy {deletable.length.toLocaleString()} to…
+    </button>
+  </div>
 
   <div class="sec">Move files on disk</div>
   <input

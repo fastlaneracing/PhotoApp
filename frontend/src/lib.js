@@ -215,3 +215,12 @@ export function mediaUrl(absPath) {
 export function isTauri() {
   return IS_Tauri;
 }
+
+// Native "choose folder" dialog. Resolves to the chosen path, or null if cancelled.
+export async function pickFolder(start = '', title = 'Choose a folder') {
+  if (IS_Tauri) {
+    const invoke = await tauriCore();
+    return (await invoke('pick_folder', { start: start || null, title })).path;
+  }
+  return (await call('pickFolder', { start, title })).path;
+}
