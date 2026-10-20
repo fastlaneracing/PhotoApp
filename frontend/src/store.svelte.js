@@ -8,17 +8,20 @@ export const lib = $state({
   categories: [],
   albums: [],
   searches: [],
+  folders: [], // library folders (Settings), with item counts
   loaded: false,
 });
 
 export async function reloadLibrary() {
   try {
-    const [tags, categories, albums, searches] = await Promise.all([
+    const [tags, categories, albums, searches, settings] = await Promise.all([
       call('tags.list'),
       call('categories.list'),
       call('albums.list'),
       call('searches.list'),
+      call('settings.get').catch(() => null),
     ]);
+    if (settings) lib.folders = settings.folders;
     lib.tags = tags;
     lib.categories = categories;
     lib.albums = albums;

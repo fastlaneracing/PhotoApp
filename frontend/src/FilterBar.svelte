@@ -21,7 +21,7 @@
     };
     if (filter.kind && filter.kind !== 'all') chips.push({ key: 'kind', label: filter.kind === 'video' ? 'videos only' : 'photos only' });
     push('year', 'year'); push('decade', 'decade');
-    push('camera', 'camera'); push('folder', 'folder');
+    push('camera', 'camera'); push('folder', 'folder'); push('root', 'library folder');
     if (filter.minWidth) chips.push({ key: 'minWidth', label: `≥${filter.minWidth}px` });
     if (filter.minHeight) chips.push({ key: 'minHeight', label: `≥${filter.minHeight}px` });
     if (filter.search) chips.push({ key: 'search', label: `“${filter.search}”` });
@@ -217,8 +217,20 @@
         <option value="sizeDesc">largest</option>
         <option value="ratingDesc">top rated</option>
         <option value="editedDesc">recently edited</option>
+        <option value="similar">similar together</option>
       </select>
     </label>
+    {#if filter.sort === 'similar'}
+      <label class="sel" title="How alike two pictures must be to be grouped">
+        <span>closeness</span>
+        <select value={String(filter.simThreshold ?? 10)} onchange={(e) => set('simThreshold', Number(e.target.value))}>
+          <option value="4">near-identical</option>
+          <option value="10">very similar</option>
+          <option value="16">similar</option>
+          <option value="22">loosely similar</option>
+        </select>
+      </label>
+    {/if}
   </div>
 
   <div class="row2">

@@ -1,6 +1,6 @@
 [package]
 name = "photoapp"
-version = "0.4.3"
+version = "0.5.0"
 edition = "2024"
 description = "Desktop photo & video library manager with tags, notes, search, safe file management and an optional local AI assistant"
 license = "MIT"

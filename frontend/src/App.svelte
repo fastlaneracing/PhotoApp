@@ -9,6 +9,7 @@
   import Sidebar from './Sidebar.svelte';
   import Inspector from './Inspector.svelte';
   import ManageView from './ManageView.svelte';
+  import SettingsView from './SettingsView.svelte';
   import AIView from './AIView.svelte';
   import AskBar from './AskBar.svelte';
   import { onMount } from 'svelte';
@@ -21,7 +22,7 @@
   let error = $state(null);
   let viewerId = $state(null);
   let lastChanged = $state(null);
-  let view = $state('library'); // 'library' | 'dups' | 'manage'
+  let view = $state('library'); // 'library' | 'dups' | 'ai' | 'manage' | 'settings'
   let syncing = $state(null); // { done, total } while the launch sync adds files
   let size = $state(176);
   try { size = Number(localStorage.getItem('pa.size')) || 176; } catch {}
@@ -230,6 +231,12 @@
         if (s.added || s.missing) toast(`Library synced: ${s.added} new/changed, ${s.missing} gone`);
         if (s.unreachableRoots?.length) toast(`Offline: ${s.unreachableRoots.join(', ')} — nothing marked missing`, 'warn', 8000);
       }
+      if (payload?.dedupe) {
+        const d = payload.dedupe;
+        if (d.error) toast(`Automatic duplicate clean-up skipped: ${d.error}`, 'warn', 10000);
+        else toast(`Duplicates cleaned automatically: ${d.files} file(s) ${d.action === 'move' ? 'moved' : 'to the Recycle Bin'}`, 'ok', 12000,
+          { label: 'Undo', run: () => call('dups.undo', { runId: d.runId }).then(() => { toast('Clean-up undone'); refresh(); }).catch((e) => toast(String(e), 'err')) });
+      }
       // Coalesce bursts (e.g. 300 files dropped into the library at once).
       clearTimeout(changeTimer);
       changeTimer = setTimeout(() => {
@@ -254,12 +261,13 @@
     <nav class="tabs">
       <button class="tab {view === 'library' ? 'on' : ''}" onclick={() => (view = 'library')}>Library</button>
       <button class="tab {view === 'dups' ? 'on' : ''}" onclick={() => (view = 'dups')}>
-        Duplicates{statsInfo ? ` (${statsInfo.dupGroups})` : ''}
+        Duplicates{statsInfo ? ` (${(statsInfo.dupFound?.groups ?? statsInfo.dupGroups).toLocaleString()})` : ''}
       </button>
       <button class="tab {view === 'ai' ? 'on' : ''}" onclick={() => (view = 'ai')}>
         ✨ AI{ai.stats?.pending ? ` (${ai.stats.pending.toLocaleString()})` : ''}
       </button>
       <button class="tab {view === 'manage' ? 'on' : ''}" onclick={() => (view = 'manage')}>Manage</button>
+      <button class="tab {view === 'settings' ? 'on' : ''}" onclick={() => (view = 'settings')}>Settings</button>
     </nav>
     <div class="stats" class:empty={!statsInfo}>
       {#if statsInfo}
@@ -279,8 +287,8 @@
         </label>
       {/if}
       {#if syncing}
-        <span class="sync" title="Cataloging files found on disk (hash, date, thumbnail)">
-          syncing {syncing.done.toLocaleString()} / {syncing.total.toLocaleString()}
+        <span class="sync" title={syncing.phase === 'fingerprint' ? 'Fingerprinting photos to find duplicates across folders' : 'Cataloging files found on disk (hash, date, thumbnail)'}>
+          {syncing.phase === 'fingerprint' ? 'checking duplicates' : 'syncing'} {syncing.done.toLocaleString()} / {syncing.total.toLocaleString()}
         </span>
       {/if}
       {#if lastChanged && lastChanged.note !== 'poll'}
@@ -296,7 +304,9 @@
   </header>
 
   {#if view === 'dups'}
-    <DupsView />
+    <DupsView onchanged={refresh} ongosettings={() => (view = 'settings')} />
+  {:else if view === 'settings'}
+    <SettingsView onchanged={refresh} />
   {:else if view === 'ai'}
     <AIView onchanged={onAiChanged} onshow={(ids) => handleFilter({ ids, presence: 'all' })} />
   {:else if view === 'manage'}

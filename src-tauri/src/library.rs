@@ -67,6 +67,10 @@ fn placeholders(n: usize) -> String {
     vec!["?"; n].join(",")
 }
 
+pub(crate) fn log_activity(conn: &Connection, action: &str, count: usize, detail: &str) {
+    log(conn, action, count, detail)
+}
+
 fn log(conn: &Connection, action: &str, count: usize, detail: &str) {
     let _ = conn.execute(
         "INSERT INTO activity_log (at, action, media_count, detail) VALUES (?1,?2,?3,?4)",
@@ -763,8 +767,36 @@ pub fn sync(conn: &mut Connection, cfg: &Config) -> Value {
 /// Same as `sync`, reporting progress. Cleanup (missing / moved / duplicate
 /// groups) runs FIRST — it takes milliseconds — so stale duplicate badges are
 /// fixed immediately, not after hashing thousands of new files.
+/// Re-attribute every path row to the library folder it lives under (folders
+/// can be added, renamed or nested differently over time). Paths outside all
+/// folders keep their old label. Returns how many rows changed.
+pub fn fix_roots(conn: &mut Connection, cfg: &Config) -> usize {
+    let rows: Vec<(i64, String, String)> = conn
+        .prepare("SELECT id, path, root FROM occurrence")
+        .and_then(|mut st| st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map(|it| it.flatten().collect()))
+        .unwrap_or_default();
+    let changes: Vec<(i64, String)> = rows
+        .into_iter()
+        .filter_map(|(id, path, root)| {
+            let r = cfg.root_for_path(&path)?;
+            (r.name != root).then(|| (id, r.name.clone()))
+        })
+        .collect();
+    if changes.is_empty() {
+        return 0;
+    }
+    if let Ok(tx) = conn.transaction() {
+        for (id, root) in &changes {
+            let _ = tx.execute("UPDATE occurrence SET root = ?2 WHERE id = ?1", params![id, root]);
+        }
+        let _ = tx.commit();
+    }
+    changes.len()
+}
+
 pub fn sync_with_progress(conn: &mut Connection, cfg: &Config, progress: &dyn Fn(Value)) -> Value {
     let t0 = std::time::Instant::now();
+    fix_roots(conn, cfg);
     let max_id_before: i64 = conn.query_row("SELECT COALESCE(MAX(id), 0) FROM media", [], |r| r.get(0)).unwrap_or(0);
     let diff = crate::incremental::diff_scan(conn, cfg);
     for p in &diff.missing_paths {
@@ -819,9 +851,10 @@ pub fn sync_with_progress(conn: &mut Connection, cfg: &Config, progress: &dyn Fn
 fn maintenance_summary(conn: &Connection, cfg: &Config) -> Value {
     let q = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).unwrap_or(0) };
     let roots: Vec<Value> = cfg
-        .roots
+        .all_roots()
         .iter()
-        .map(|r| json!({ "name": r.name, "path": r.path, "online": Path::new(&r.path).is_dir() }))
+        .map(|r| json!({ "name": r.name, "path": r.path, "online": Path::new(&r.path).is_dir(),
+                         "enabled": r.enabled, "protected": r.protected }))
         .collect();
     let last_backup: Option<String> = conn
         .query_row("SELECT value FROM app_meta WHERE key = 'last_backup'", [], |r| r.get(0))
@@ -1016,6 +1049,11 @@ fn bulk_move(conn: &mut Connection, cfg: &Config, ids: &[i64], dir: &str, apply:
             results.push(json!({ "id": id, "ok": false, "error": "not in catalog" }));
             continue;
         };
+        if cfg.root_for_path(&cur).map(|r| r.protected).unwrap_or(false) {
+            failed += 1;
+            results.push(json!({ "id": id, "ok": false, "from": cur, "error": "in a protected folder (Settings)" }));
+            continue;
+        }
         let fname = cur.rsplit(['\\', '/']).next().unwrap_or(&cur).to_string();
         let target = format!("{dir}{sep}{fname}");
         if crate::paths::key(&parent_dir(&cur)) == crate::paths::key(&dir) {
@@ -1206,7 +1244,7 @@ static RECYCLE_OK: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::ne
 /// Prove the drive holding `root` really recycles: trash a tiny probe file,
 /// find it in the bin, then purge it. On drives without a Recycle Bin (many
 /// USB / network drives) Windows would destroy files instead, so we refuse.
-fn ensure_recycle_bin(root: &str) -> Result<(), String> {
+pub(crate) fn ensure_recycle_bin(root: &str) -> Result<(), String> {
     let k = crate::paths::key(root);
     if RECYCLE_OK.lock().map(|v| v.contains(&k)).unwrap_or(false) {
         return Ok(());
@@ -1272,6 +1310,18 @@ fn delete_items(conn: &mut Connection, cfg: &Config, ids: &[i64]) -> Result<Valu
     if paths.is_empty() {
         return Err("nothing to delete — the selected items are not on disk".into());
     }
+    // Protected folders (Settings) are never deleted from.
+    let mut protected_skipped: Vec<String> = vec![];
+    paths.retain(|(_, _, p)| {
+        let keep = !cfg.root_for_path(p).map(|r| r.protected).unwrap_or(false);
+        if !keep {
+            protected_skipped.push(format!("{p}: kept — it is in a protected folder"));
+        }
+        keep
+    });
+    if paths.is_empty() {
+        return Err("these items are only in protected folders — unprotect the folder in Settings to delete them".into());
+    }
     // Every file must sit under a library root whose drive recycles.
     let mut roots_checked: Vec<String> = vec![];
     for (_, _, p) in &paths {
@@ -1283,7 +1333,7 @@ fn delete_items(conn: &mut Connection, cfg: &Config, ids: &[i64]) -> Result<Valu
     }
 
     let mut deleted_paths = 0usize;
-    let mut failed: Vec<String> = vec![];
+    let mut failed: Vec<String> = protected_skipped;
     let mut gone_occ: Vec<i64> = vec![];
     for (_, occ, p) in &paths {
         if !Path::new(p).exists() {
@@ -1685,6 +1735,10 @@ pub fn call(conn: &mut Connection, cfg: &Config, cmd: &str, a: &Value) -> Result
         "items.restore" => restore_items(conn, cfg, &ids(a)?),
         "reveal" => reveal(&text(a, "path")?, false),
         c if c.starts_with("history.") => crate::history::call(conn, c, a),
+        c if c.starts_with("dups.settings.") || c.starts_with("folders.") || c.starts_with("settings.") || c == "exclusions.set" => {
+            crate::settings::call(conn, cfg, c, a)
+        }
+        c if c.starts_with("dups.") => crate::dedupe::call(conn, cfg, c, a),
         c if c.starts_with("ai.") => crate::ai::call(conn, cfg, c, a),
         "openFile" => reveal(&text(a, "path")?, true),
 

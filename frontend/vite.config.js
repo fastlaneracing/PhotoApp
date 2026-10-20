@@ -31,7 +31,10 @@ function mediaMiddleware() {
         }
         // Accept C:\..., /C:/..., C:/...
         abs = abs.replace(/^\/?([a-zA-Z]):[\/\\]/, (m, d) => `${d}:\\`).replace(/\//g, '\\');
-        if (!/^[a-zA-Z]:\\/i.test(abs)) {
+        // Windows drive paths; on other platforms (contributors' dev boxes) plain absolute paths.
+        if (process.platform !== 'win32' && /^\/[^\\]/.test(decodeURIComponent(u.pathname.slice(MEDIA_PREFIX.length)))) {
+          abs = decodeURIComponent(u.pathname.slice(MEDIA_PREFIX.length));
+        } else if (!/^[a-zA-Z]:\\/i.test(abs)) {
           res.statusCode = 403;
           return res.end('forbidden path');
         }

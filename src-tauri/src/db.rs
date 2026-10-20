@@ -253,6 +253,13 @@ fn migrate(conn: &Connection) {
            AND NOT EXISTS (SELECT 1 FROM app_meta WHERE key = 'ai_runner_pid' AND value = ?1)",
         [std::process::id().to_string()],
     );
+    // Duplicates across folders: actual pixel size (EXIF rotation applied) and
+    // a 64-bit picture fingerprint per image; fp_at = when it was computed.
+    add_column(conn, "media", "px_w", "ALTER TABLE media ADD COLUMN px_w INTEGER");
+    add_column(conn, "media", "px_h", "ALTER TABLE media ADD COLUMN px_h INTEGER");
+    add_column(conn, "media", "phash", "ALTER TABLE media ADD COLUMN phash INTEGER");
+    add_column(conn, "media", "fp_at", "ALTER TABLE media ADD COLUMN fp_at INTEGER");
+    conn.execute_batch(crate::dedupe::SCHEMA).expect("dedupe schema");
     canonicalize_paths(conn);
     fix_filename_dates(conn);
 }

@@ -112,7 +112,7 @@
     {#if liveAi}<button class="lnk bad" onclick={undoAllAi}>undo all AI changes on this photo</button>{/if}
     {#each history as h (h.id)}
       <div class="h" class:undone={h.undoneAt}>
-        <span class="src {h.source}">{h.source === 'ai' ? 'AI' : 'you'}</span>
+        <span class="src {h.source}" title={h.source === 'dedupe' ? 'Merged from a duplicate that was removed' : ''}>{h.source === 'ai' ? 'AI' : h.source === 'dedupe' ? 'duplicate' : 'you'}</span>
         <span class="ht" title={JSON.stringify(h.payload)}>{describeChange(h.action, h.payload)}</span>
         {#if h.undoneAt}<span class="hw">undone</span>{:else}<button class="lnk bad" onclick={() => undo(h)}>undo</button>{/if}
         <span class="hw full">{when(h.at)}{h.jobId ? ` · AI run #${h.jobId}` : ''}</span>

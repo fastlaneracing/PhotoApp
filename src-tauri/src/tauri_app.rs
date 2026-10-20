@@ -36,14 +36,91 @@ pub fn item_detail(id: i64) -> Result<crate::query::Detail, String> {
 /// Runs on a worker thread (not the UI thread), so a full sync, cleanup or
 /// 2,000-item bulk edit never freezes the window.
 #[tauri::command]
-pub async fn call(cmd: String, args: Option<serde_json::Value>) -> Result<serde_json::Value, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+pub async fn call(app: tauri::AppHandle, cmd: String, args: Option<serde_json::Value>) -> Result<serde_json::Value, String> {
+    let r = tauri::async_runtime::spawn_blocking(move || {
         let mut conn = open_db();
         let c = cfg();
         crate::library::call(&mut conn, &c, &cmd, &args.unwrap_or(serde_json::json!({})))
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())??;
+    // Library folders changed in Settings: let the viewer load the new
+    // folders, re-point the live watcher, and catalog what's new.
+    if r.get("folderChanged").and_then(|v| v.as_bool()) == Some(true) {
+        grant_asset_scope(&app);
+        watcher::folders_changed();
+        if r.get("syncNeeded").and_then(|v| v.as_bool()) == Some(true) {
+            background_sync(app.clone(), "folders changed");
+        } else {
+            let _ = app.emit("catalog-changed", serde_json::json!({ "note": "folders changed" }));
+        }
+    }
+    Ok(r)
+}
+
+/// The webview may load files from the library folders and the thumbnail
+/// cache only (nothing is hardcoded in tauri.conf.json).
+fn grant_asset_scope(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    let scope = app.asset_protocol_scope();
+    let c = cfg();
+    for r in c.roots.iter().chain(c.paused.iter()) {
+        if let Err(e) = scope.allow_directory(&r.path, true) {
+            eprintln!("asset scope {}: {e}", r.path);
+        }
+    }
+    let thumbs = crate::paths::thumbs_dir();
+    let _ = std::fs::create_dir_all(&thumbs);
+    let _ = scope.allow_directory(&thumbs, true);
+}
+
+static SYNC_BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static SYNC_AGAIN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Sync with disk on a background thread (progress -> `catalog-changed`), then
+/// fingerprint new photos for duplicate detection and run the automatic
+/// duplicate clean-up if Settings ask for it. One at a time; a request while
+/// one runs makes it go round once more.
+fn background_sync(handle: tauri::AppHandle, why: &'static str) {
+    use std::sync::atomic::Ordering::SeqCst;
+    if SYNC_BUSY.swap(true, SeqCst) {
+        SYNC_AGAIN.store(true, SeqCst);
+        return;
+    }
+    std::thread::spawn(move || {
+        loop {
+            SYNC_AGAIN.store(false, SeqCst);
+            let cfg = cfg();
+            let mut conn = open_db();
+            if why == "launch sync" {
+                crate::library::backup_if_due(&conn);
+            }
+            let h2 = handle.clone();
+            let summary = crate::library::sync_with_progress(&mut conn, &cfg, &move |p| {
+                let _ = h2.emit("catalog-changed", serde_json::json!({ "note": "sync progress", "progress": p }));
+            });
+            eprintln!("{why}: {summary}");
+            let _ = handle.emit("catalog-changed", serde_json::json!({ "note": why, "sync": summary }));
+            let h3 = handle.clone();
+            crate::dedupe::fingerprint_pending(&conn, &move |done, total| {
+                if total >= 50 && (done == total || done % 400 == 0) {
+                    let p = serde_json::json!({ "phase": "fingerprint", "done": done, "total": if done == total { 0 } else { total } });
+                    let _ = h3.emit("catalog-changed", serde_json::json!({ "note": "sync progress", "progress": p }));
+                }
+            });
+            if let Some(d) = crate::dedupe::auto_resolve(&mut conn, &cfg) {
+                eprintln!("auto duplicates: {d}");
+                let _ = handle.emit("catalog-changed", serde_json::json!({ "note": "duplicates cleaned", "dedupe": d }));
+            }
+            // Refresh the header's duplicate count.
+            let _ = crate::dedupe::scan(&conn, &cfg, false);
+            let _ = handle.emit("catalog-changed", serde_json::json!({ "note": "duplicates counted" }));
+            if !SYNC_AGAIN.load(SeqCst) {
+                break;
+            }
+        }
+        SYNC_BUSY.store(false, SeqCst);
+    });
 }
 
 /// Native folder picker (Copy to…), parented to the app window so it stays on
@@ -164,8 +241,7 @@ pub fn relocate_undo(media_id: i64) -> Result<crate::ops::RelocatePlan, String> 
 /// notify the frontend. Runs for the lifetime of the app (spawned in setup).
 fn start_watcher(app: &tauri::AppHandle) {
     let app = std::sync::Arc::new(app.clone()); // Arc so each Fn call can clone an owned handle
-    let cfg = cfg();
-    watcher::spawn_blocking(cfg.clone(), move |cfg, action| {
+    watcher::spawn_blocking(cfg(), cfg, move |cfg, action| {
         let app = app.clone(); // owned handle for this call
         // All DB + thumbnail work happens on this watcher thread; only the
         // final emit hops to the main thread.
@@ -233,35 +309,11 @@ pub fn run() {
             relocate_undo
         ])
         .setup(|app| {
-            // Let the webview load images from the configured library folders
-            // and the thumbnail cache only (nothing is hardcoded in tauri.conf).
-            {
-                use tauri::Manager;
-                let scope = app.asset_protocol_scope();
-                for r in &cfg().roots {
-                    if let Err(e) = scope.allow_directory(&r.path, true) {
-                        eprintln!("asset scope {}: {e}", r.path);
-                    }
-                }
-                let thumbs = crate::paths::thumbs_dir();
-                let _ = std::fs::create_dir_all(&thumbs);
-                let _ = scope.allow_directory(&thumbs, true);
-            }
+            grant_asset_scope(app.handle());
             // Launch sync on a background thread so the window paints at once
             // even when many files were added while the app was closed. The
             // grid refreshes on the `catalog-changed` event when it finishes.
-            let handle = app.handle().clone();
-            std::thread::spawn(move || {
-                let cfg = cfg();
-                let mut conn = open_db();
-                crate::library::backup_if_due(&conn);
-                let h2 = handle.clone();
-                let summary = crate::library::sync_with_progress(&mut conn, &cfg, &move |p| {
-                    let _ = h2.emit("catalog-changed", serde_json::json!({ "note": "sync progress", "progress": p }));
-                });
-                eprintln!("launch sync: {summary}");
-                let _ = handle.emit("catalog-changed", serde_json::json!({ "note": "launch sync", "sync": summary }));
-            });
+            background_sync(app.handle().clone(), "launch sync");
             start_watcher(app.handle());
             // Settle edit-vs-rename decisions from the live watcher once a
             // burst of file changes has gone quiet for a while.

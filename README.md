@@ -27,7 +27,8 @@ Built with [Tauri 2](https://tauri.app) (Rust) and [Svelte 5](https://svelte.dev
 - **Keeps up with Explorer** — add, move, rename, edit or delete files outside the app and the catalog follows (live file watcher + sync at launch). Notes and tags follow a photo by its *content* (SHA-256), not its path, so moving or renaming never loses them.
 - **Move files into folders** from the app — previewed first, never overwrites, every move undoable.
 - **Delete to the Windows Recycle Bin** — never permanent, with *Undo* and a *Recently deleted* view. The app checks each drive really has a Recycle Bin and refuses to delete otherwise.
-- **Duplicate finder** (byte-identical copies) with non-destructive staging.
+- **Several library folders, one library** — add as many folders or drives as you like in **Settings**; they're cataloged, watched, searched and filtered together. Order them by priority, **pause** one (a drive you rarely plug in), or **protect** one (a backup drive photoApp must never delete from).
+- **Duplicates across all folders** — finds byte-identical copies *and* the same photo saved at another size or quality (resized, re-compressed, converted, or stripped of its camera data), keeps the **highest-quality** copy (or the one in your top folder), and sends the rest to the Recycle Bin or a review folder. Notes, tags and ratings of removed copies are merged into the kept one; every clean-up can be undone. Look-alikes such as burst shots are only ever removed after you review them. Optional automatic clean-up after each sync.
 - **Unplugged-drive safe** — an offline drive is reported, never mass-marked as missing.
 - **Automatic daily catalog backups**, plus one before every bulk cleanup.
 
@@ -70,19 +71,21 @@ src-tauri\target\release\photoapp.exe
 
 `build.bat` builds the front end and a single release `photoapp.exe` with the UI embedded (the first build downloads dependencies and takes several minutes). It refuses to run while photoApp is open, and saves its output to `build.log`.
 
-**First run** creates `config\config.toml` pointing at your *Pictures* folder and catalogs it. To use other folders, edit the file and restart:
+**First run** creates `config\config.toml` pointing at your *Pictures* folder and catalogs it. Add, remove, pause, protect and reorder library folders in the **Settings** tab, or edit the file and restart:
 
 ```toml
 exclusions = ["D:/Photos/Temp"]          # folders to skip (prefix match)
 # ffmpeg = "C:/tools/ffmpeg/bin/ffmpeg.exe"
 
-[[roots]]
+[[roots]]                                # highest priority first
 name = "Photos"
 path = "D:/Photos"
 
 [[roots]]
 name = "Phone backup"
 path = "E:/Phone"
+enabled = true                           # false = paused (not scanned or watched)
+protected = true                         # never delete or move files here
 ```
 
 See [`config/config.example.toml`](config/config.example.toml). Use forward slashes (or doubled backslashes) in paths.
@@ -160,7 +163,7 @@ Run the Rust tests with `cargo test` in `src-tauri`. See [docs/ARCHITECTURE.md](
 - Windows is the only tested platform.
 - HEIC images are cataloged but get no thumbnail (the image decoder doesn't read HEIC); RAW formats are not cataloged.
 - Video thumbnails need ffmpeg; `.mov` / `.avi` may not play inline (WebView2 limitation) — use *Open file*.
-- Duplicate detection is exact (byte-identical); visually similar photos are not grouped.
+- Finding the same photo at another quality uses the thumbnail, so HEIC images (no thumbnail) and videos are only matched when byte-identical. Crops and rotated copies are treated as different pictures.
 - AI search works over AI-written descriptions and your metadata — review photos first for visual search to work.
 
 ## License

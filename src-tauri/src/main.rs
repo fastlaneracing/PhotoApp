@@ -5,6 +5,7 @@
 mod ai;
 mod api;
 mod db;
+mod dedupe;
 mod exif;
 mod exifcheck;
 mod history;
@@ -14,6 +15,7 @@ mod ops;
 mod paths;
 mod query;
 mod scanner;
+mod settings;
 mod tauri_app;
 mod thumbs;
 mod watcher;

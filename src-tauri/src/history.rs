@@ -20,11 +20,14 @@ pub struct Source {
     pub ai: bool,
     pub job: Option<i64>,
     pub suggestion: Option<i64>,
+    /// Duplicate clean-up run that merged annotations into the kept copy.
+    /// Stored as job_id = -run so `undo_job(-run)` reverts the merge.
+    pub dedupe: Option<i64>,
 }
 
 impl Source {
     pub fn ai(job: i64, suggestion: i64) -> Self {
-        Source { ai: true, job: Some(job), suggestion: Some(suggestion) }
+        Source { ai: true, job: Some(job), suggestion: Some(suggestion), dedupe: None }
     }
 }
 
@@ -55,8 +58,8 @@ pub fn record(conn: &Connection, media_id: i64, action: &str, payload: Value) {
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![
             now(),
-            if src.ai { "ai" } else { "user" },
-            src.job,
+            if src.ai { "ai" } else if src.dedupe.is_some() { "dedupe" } else { "user" },
+            src.job.or(src.dedupe.map(|r| -r)),
             src.suggestion,
             media_id,
             action,

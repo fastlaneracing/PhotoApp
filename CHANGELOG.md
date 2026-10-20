@@ -2,6 +2,30 @@
 
 All notable changes to photoApp. Versions follow [Semantic Versioning](https://semver.org).
 
+## [0.5.0] - 2026-10-18
+### Added
+- **Settings tab.**
+  - **Library folders:** add folders or drives (folder picker or a typed path, e.g. a network share), rename, reorder by priority, pause, protect, or remove, and edit the skipped folders. Changes are written to `config.toml` (the previous version is kept as `config.toml.bak`). The live watcher and the viewer pick up new folders at once, and a background sync catalogs them, with no restart.
+  - **Pause:** the folder is not scanned or watched; its photos, notes and tags stay in the catalog, as with an unplugged drive.
+  - **Protect:** photoApp never deletes, moves or replaces files in that folder, including Delete, bulk move and duplicate clean-up.
+  - **Remove:** the folder leaves the library. Nothing on disk is touched; its items keep their notes and come back if you add the folder again.
+- **Sort: similar together.** Look-alike pictures are placed next to each other, closest matches side by side, biggest groups first; pictures with no look-alike follow by date. Each tile in a group shows a colored bar and a `≈group · size` badge. A *closeness* picker (near-identical → loosely similar) sets how alike pictures must be. Uses the duplicate fingerprints, so it covers images that have been fingerprinted (after a sync).
+- **Library folders** in the sidebar: show only items that have a copy in one folder.
+- **Duplicates across all folders** (new Duplicates tab).
+  - **Identical copies:** byte-for-byte the same file.
+  - **Lower-quality copies:** the same picture resized, re-compressed, converted (PNG / JPEG / WebP) or stripped of camera data. Found with a picture fingerprint plus shape and date checks.
+  - **Look-alikes** (same size and format, all with camera data, e.g. burst shots) are listed for review and never removed automatically. They can be marked *Not duplicates*.
+  - **Which copy is kept:** the highest-quality one (most pixels, then camera data, then lossless over lossy, then least compressed) or the one in the highest-priority folder. Original names win over `IMG (2).jpg` / `Copy of …`. Each group says why its copy was kept, and any copy can be picked instead.
+  - **The other copies** go to the Recycle Bin or a review folder outside the library. Their notes, tags, rating, label and albums are merged into the kept copy.
+  - **Undo:** every clean-up can be undone as a whole, from the toast or from *Recent clean-ups*. Undo restores the files and reverts the merged notes and tags.
+  - **Compare side by side**, with a full-size view of each copy.
+  - **One-click clean-up** of all identical and lower-quality copies.
+  - **Automatic clean-up after each sync** (Settings; off by default).
+- **Duplicate settings:** what counts as a duplicate (strict / normal / loose matching, same date taken, include videos, anywhere vs. only between folders), which copy to keep, what happens to the others, and automatic clean-up.
+### Changed
+- Path rows are re-attributed to the right library folder on every sync, so renamed or re-added folders are counted correctly.
+- The header's *Duplicates (N)* count includes the same photo at a lower quality.
+
 ## [0.4.3] - 2026-10-13
 ### Added
 - **Hide tagged**: one button in the filter bar (or *hide all* next to *Categories & tags* in the sidebar) hides every item that already has a tag. It stays on while you switch views, folders, years, albums or searches, so you can work through what's left to tag. An orange *hiding all tagged* chip shows it's on; click ✕ on the chip or the button again to show tagged items. Choosing a tag or category to show turns it off.

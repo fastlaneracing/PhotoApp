@@ -3,25 +3,78 @@ use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
 use rusqlite::Connection;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::exif;
 
-#[derive(Deserialize, Clone)]
+fn yes() -> bool {
+    true
+}
+
+/// One library folder. Order in config.toml = priority (first = highest).
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 pub struct Root {
     pub name: String,
     pub path: String,
+    /// false = paused: not scanned or watched, its catalog rows are left as
+    /// they are (like an unplugged drive).
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    /// true = photoApp never deletes, moves or replaces files in this folder
+    /// (e.g. a backup drive). Duplicates there are always kept.
+    #[serde(default)]
+    pub protected: bool,
 }
 
 #[derive(Deserialize, Clone)]
 pub struct Config {
+    /// ACTIVE library folders only, in priority order. Paused folders are in
+    /// `paused` so every walker / watcher skips them without extra checks.
     pub roots: Vec<Root>,
     #[serde(default)]
     pub exclusions: Vec<String>,
     /// ffmpeg.exe for video thumbnails (optional; default: `ffmpeg` on PATH).
     #[serde(default)]
     pub ffmpeg: Option<String>,
+    #[serde(skip)]
+    pub paused: Vec<Root>,
+    /// Every folder as written in the file (active + paused), priority order.
+    #[serde(skip)]
+    pub all: Vec<Root>,
+}
+
+impl Config {
+    /// Every configured folder (active and paused) in priority order.
+    pub fn all_roots(&self) -> Vec<Root> {
+        if self.all.is_empty() {
+            let mut v = self.roots.clone();
+            v.extend(self.paused.clone());
+            v
+        } else {
+            self.all.clone()
+        }
+    }
+    /// Priority index of a root by name (0 = highest).
+    pub fn priority(&self, name: &str) -> usize {
+        self.all_roots().iter().position(|r| r.name == name).unwrap_or(999)
+    }
+    pub fn is_protected(&self, name: &str) -> bool {
+        self.roots.iter().chain(self.paused.iter()).any(|r| r.name == name && r.protected)
+    }
+    /// The root (active or paused) a path lives under; longest match wins.
+    pub fn root_for_path(&self, path: &str) -> Option<&Root> {
+        let k = crate::paths::key(path);
+        self.roots
+            .iter()
+            .chain(self.paused.iter())
+            .filter(|r| {
+                let rk = crate::paths::key(&r.path);
+                let rk = rk.trim_end_matches('\\');
+                k == rk || k.starts_with(&format!("{rk}\\"))
+            })
+            .max_by_key(|r| r.path.len())
+    }
 }
 
 /// The config written on first run: one library root = the user's Pictures folder.
@@ -43,8 +96,8 @@ exclusions = []
 # Optional: full path to ffmpeg.exe for video thumbnails. Default: ffmpeg on PATH.
 # ffmpeg = "C:/tools/ffmpeg/bin/ffmpeg.exe"
 
-# One [[roots]] block per library folder. The first root is the default
-# destination for "move to year folder" and the duplicates staging folder.
+# One [[roots]] block per library folder, highest priority first. Manage them
+# in the app under Settings (add, pause, protect, reorder).
 [[roots]]
 name = "Pictures"
 path = "{pictures}"
@@ -62,7 +115,20 @@ pub fn load_config(path: &Path) -> Config {
     }
     let text = fs::read_to_string(path)
         .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
-    toml::from_str(&text).unwrap_or_else(|e| panic!("config error in {}: {e}", path.display()))
+    let mut cfg: Config =
+        toml::from_str(&text).unwrap_or_else(|e| panic!("config error in {}: {e}", path.display()));
+    let (active, paused): (Vec<Root>, Vec<Root>) = cfg.roots.drain(..).partition(|r| r.enabled);
+    cfg.all = active.iter().chain(paused.iter()).cloned().collect();
+    // Keep file order in `all` (partition preserved relative order per side).
+    if let Ok(raw) = toml::from_str::<toml::Value>(&text) {
+        if let Some(arr) = raw.get("roots").and_then(|v| v.as_array()) {
+            let names: Vec<String> = arr.iter().filter_map(|r| r.get("name")?.as_str().map(String::from)).collect();
+            cfg.all.sort_by_key(|r| names.iter().position(|n| n == &r.name).unwrap_or(usize::MAX));
+        }
+    }
+    cfg.roots = active;
+    cfg.paused = paused;
+    cfg
 }
 
 const IMG: &[&str] = &["jpg", "jpeg", "png", "webp", "gif", "bmp", "tif", "tiff", "heic"];
@@ -280,9 +346,9 @@ pub(crate) fn upsert_entry(
         Some((occ_id, old_media)) if old_media != media_id => {
             tx.execute(
                 "UPDATE occurrence SET media_id = ?2, path = ?3, mtime = ?4, indexed_at = ?5,
-                        missing = 0, dup_group = NULL, is_canonical = 0
+                        missing = 0, dup_group = NULL, is_canonical = 0, root = ?6
                  WHERE id = ?1",
-                rusqlite::params![occ_id, media_id, path_s, e.mtime, now],
+                rusqlite::params![occ_id, media_id, path_s, e.mtime, now, e.root],
             ).ok()?;
             // Edit or rename-shuffle? Decided later, once all paths are known.
             tx.execute(
@@ -291,9 +357,10 @@ pub(crate) fn upsert_entry(
             ).ok()?;
         }
         Some((occ_id, _)) => {
+            // The folder may have been renamed / re-added since: keep `root` current.
             tx.execute(
-                "UPDATE occurrence SET path = ?2, mtime = ?3, indexed_at = ?4, missing = 0 WHERE id = ?1",
-                rusqlite::params![occ_id, path_s, e.mtime, now],
+                "UPDATE occurrence SET path = ?2, mtime = ?3, indexed_at = ?4, missing = 0, root = ?5 WHERE id = ?1",
+                rusqlite::params![occ_id, path_s, e.mtime, now, e.root],
             ).ok()?;
         }
         None => {

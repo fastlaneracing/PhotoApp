@@ -27,6 +27,29 @@ use crate::scanner::Config;
 
 const DEBOUNCE: Duration = Duration::from_millis(500);
 
+/// Bumped when the library folders change (Settings); a running watcher
+/// notices within a second and re-watches the new folder list.
+pub static CONFIG_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn folders_changed() {
+    CONFIG_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
+
+fn watch_roots(watcher: &mut RecommendedWatcher, cfg: &Config, prev: &[String]) -> Vec<String> {
+    let now: Vec<String> = cfg.roots.iter().map(|r| r.path.clone()).collect();
+    for p in prev.iter().filter(|p| !now.contains(p)) {
+        let _ = watcher.unwatch(Path::new(p));
+        eprintln!("unwatched: {p}");
+    }
+    for p in now.iter().filter(|p| !prev.contains(p)) {
+        match watcher.watch(Path::new(p), notify::RecursiveMode::Recursive) {
+            Ok(()) => eprintln!("watching: {p}"),
+            Err(e) => eprintln!("watch failed on {p}: {e}"),
+        }
+    }
+    now
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum WatchAction {
     Added(PathBuf),
@@ -40,6 +63,13 @@ pub enum WatchAction {
 /// Drive the watcher to completion on the calling thread. `on_action` is
 /// invoked after debounce, once per changed path, in arrival order.
 pub fn run_blocking(cfg: &Config, on_action: impl Fn(&Config, WatchAction)) {
+    run_reloading(cfg.clone(), None, on_action)
+}
+
+/// Like `run_blocking`; with `reload`, the folder list is re-read whenever
+/// `folders_changed()` is called.
+pub fn run_reloading(cfg: Config, reload: Option<fn() -> Config>, on_action: impl Fn(&Config, WatchAction)) {
+    let mut cfg = cfg;
     let (tx, rx) = mpsc::channel::<notify::Result<Event>>();
 
     let mut watcher = RecommendedWatcher::new(
@@ -48,21 +78,29 @@ pub fn run_blocking(cfg: &Config, on_action: impl Fn(&Config, WatchAction)) {
     )
     .expect("create watcher");
 
-    for root in &cfg.roots {
-        match watcher.watch(Path::new(&root.path), notify::RecursiveMode::Recursive) {
-            Ok(()) => println!("watching: {}", root.path),
-            Err(e) => eprintln!("watch failed on {}: {e}", root.path),
-        }
-    }
+    let mut watched = watch_roots(&mut watcher, &cfg, &[]);
+    let mut seen_gen = CONFIG_GEN.load(std::sync::atomic::Ordering::SeqCst);
 
     // Debounce: collect path -> latest action until a quiet period elapses.
     loop {
-        match rx.recv() {
+        if let Some(f) = reload {
+            let g = CONFIG_GEN.load(std::sync::atomic::Ordering::SeqCst);
+            if g != seen_gen {
+                seen_gen = g;
+                cfg = f();
+                watched = watch_roots(&mut watcher, &cfg, &watched);
+            }
+        }
+        let first = if reload.is_some() { rx.recv_timeout(Duration::from_secs(1)) } else { rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected) };
+        match first {
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Ok(Err(_)) => break,
             Ok(Ok(event)) => {
                 let now = Instant::now();
                 let mut pending: HashMap<PathBuf, WatchAction> = HashMap::new();
                 for e in event.paths {
-                    if let Some(action) = classify(&e, &event.kind, cfg) {
+                    if let Some(action) = classify(&e, &event.kind, &cfg) {
                         pending.insert(e, action);
                     }
                 }
@@ -74,7 +112,7 @@ pub fn run_blocking(cfg: &Config, on_action: impl Fn(&Config, WatchAction)) {
                     match rx.recv_timeout(remaining) {
                         Ok(Ok(e2)) => {
                             for e in e2.paths {
-                                if let Some(action) = classify(&e, &e2.kind, cfg) {
+                                if let Some(action) = classify(&e, &e2.kind, &cfg) {
                                     pending.insert(e, action);
                                 }
                             }
@@ -96,11 +134,9 @@ pub fn run_blocking(cfg: &Config, on_action: impl Fn(&Config, WatchAction)) {
                     WatchAction::Rescan(_) => 2,
                 });
                 for action in actions {
-                    on_action(cfg, action);
+                    on_action(&cfg, action);
                 }
             }
-            // Channel closed (watcher dropped) -> stop.
-            Ok(Err(_)) | Err(_) => break,
         }
     }
 }
@@ -155,7 +191,7 @@ fn classify(path: &Path, kind: &EventKind, cfg: &Config) -> Option<WatchAction> 
 
 /// One-shot convenience for the Tauri app: run the watcher on a background
 /// thread and call `on_action` (which must be Send + 'static).
-pub fn spawn_blocking(cfg: Config, on_action: impl Fn(&Config, WatchAction) + Send + 'static)
+pub fn spawn_blocking(cfg: Config, reload: fn() -> Config, on_action: impl Fn(&Config, WatchAction) + Send + 'static)
 -> thread::JoinHandle<()> {
-    thread::spawn(move || run_blocking(&cfg, on_action))
+    thread::spawn(move || run_reloading(cfg, Some(reload), on_action))
 }

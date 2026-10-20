@@ -15,8 +15,11 @@ exclusions = [
 # Optional: ffmpeg for video thumbnails. Default: "ffmpeg" on PATH.
 # ffmpeg = "C:/tools/ffmpeg/bin/ffmpeg.exe"
 
-# One [[roots]] block per library folder. The first root is the default
-# destination for "move to year folder" and for staged duplicates.
+# One [[roots]] block per library folder, highest priority first (the app's
+# Settings tab manages these). The first is the default destination for
+# "move to year folder".
+#   enabled = false   paused: not scanned or watched, catalog left as is
+#   protected = true  photoApp never deletes or moves files in this folder
 [[roots]]
 name = "Photos"
 path = "D:/Photos"
@@ -24,3 +27,4 @@ path = "D:/Photos"
 # [[roots]]
 # name = "Phone backup"
 # path = "E:/Phone"
+# protected = true

@@ -47,6 +47,12 @@ pub struct Item {
     pub ai_reviewed: bool,
     /// AI suggestions waiting for approval
     pub ai_pending: i64,
+    /// Sort "similar" only: 1-based look-alike group number and its size
+    /// (absent for pictures with no look-alike).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sim_group: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sim_size: Option<i64>,
 }
 
 #[derive(Serialize, Clone)]
@@ -84,6 +90,8 @@ pub enum Sort {
     RatingDesc,
     #[serde(alias = "editedDesc")]
     EditedDesc,
+    /// Look-alike pictures next to each other (perceptual fingerprint).
+    Similar,
 }
 
 impl Default for Sort {
@@ -111,6 +119,9 @@ pub struct Filter {
     /// notes, tags, categories, albums)
     pub search: Option<String>,
     pub sort: Option<Sort>,
+    /// Sort "similar": max fingerprint difference (bits of 64) for two
+    /// pictures to count as look-alikes. Default 10.
+    pub sim_threshold: Option<u32>,
     pub limit: Option<usize>,
     // --- library management filters ---
     /// tag ids; with `tag_mode` "any" an item needs one of them, else all.
@@ -145,6 +156,8 @@ pub struct Filter {
     pub ids: Option<Vec<i64>>,
     /// exact folder (absolute path); items directly inside it
     pub dir: Option<String>,
+    /// library folder (Settings → Library folders) by name: items with a copy there
+    pub root: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -297,6 +310,8 @@ fn order_clause(sort: Sort) -> &'static str {
         Sort::SizeDesc => "m.bytes DESC, m.id DESC",
         Sort::RatingDesc => "rating DESC, m.taken_at DESC, m.id DESC",
         Sort::EditedDesc => "COALESCE(ann.updated_at, 0) DESC, m.id DESC",
+        // Base order; `order_by_similarity` regroups afterwards.
+        Sort::Similar => "m.taken_at ASC, m.id ASC",
     }
 }
 
@@ -487,6 +502,15 @@ fn build_where(filter: &Filter) -> (String, Vec<Value>) {
             "EXISTS (SELECT 1 FROM occurrence o WHERE o.media_id=m.id AND o.missing=0 AND o.dup_group IS NOT NULL)".into(),
         );
     }
+    if let Some(r) = &filter.root {
+        if !r.is_empty() {
+            params.push(Value::Text(r.clone()));
+            clauses.push(format!(
+                "EXISTS (SELECT 1 FROM occurrence o WHERE o.media_id=m.id AND o.missing=0 AND o.root = ?{})",
+                params.len()
+            ));
+        }
+    }
     if let Some(d) = &filter.dir {
         if !d.is_empty() {
             // Exact folder match without LIKE (underscores in folder names are
@@ -559,6 +583,8 @@ fn map_item(r: &rusqlite::Row) -> rusqlite::Result<Item> {
         deleted: r.get::<_, i64>(20)? == 1,
         ai_reviewed: r.get::<_, i64>(21)? == 1,
         ai_pending: r.get(22)?,
+        sim_group: None,
+        sim_size: None,
     })
 }
 
@@ -582,13 +608,115 @@ pub fn apply_filter(conn: &Connection, filter: &Filter) -> Result<Vec<Item>, Str
     for r in rows {
         let it = r.map_err(|e| e.to_string())?;
         out.push(it);
-        if let Some(lim) = filter.limit {
+        // Similarity needs every match before it can order them.
+        if let (Some(lim), false) = (filter.limit, sort == Sort::Similar) {
             if out.len() >= lim {
                 break;
             }
         }
     }
+    if sort == Sort::Similar {
+        out = order_by_similarity(conn, out, filter.sim_threshold.unwrap_or(10).min(32));
+        if let Some(lim) = filter.limit {
+            out.truncate(lim);
+        }
+    }
     Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// Similarity order
+// ---------------------------------------------------------------------------
+
+/// Regroup `items` (given oldest first) so look-alike pictures sit together.
+///
+/// Pictures whose fingerprints (`media.phash`, see dedupe.rs) differ by at
+/// most `max_bits` are linked; linked pictures form a group (chains allowed —
+/// this is for browsing, nothing is removed). Groups come first, largest
+/// first; inside a group each next picture is the closest one left to the
+/// previous, so near-identical shots end up side by side. Pictures with no
+/// look-alike follow in date order, then videos and unfingerprinted files.
+fn order_by_similarity(conn: &Connection, items: Vec<Item>, max_bits: u32) -> Vec<Item> {
+    use rayon::prelude::*;
+    use std::collections::HashMap;
+
+    let hashes: HashMap<i64, u64> = conn
+        .prepare("SELECT id, phash FROM media WHERE phash IS NOT NULL AND kind = 'image'")
+        .and_then(|mut st| {
+            st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)? as u64)))
+                .map(|it| it.flatten().collect())
+        })
+        .unwrap_or_default();
+
+    let (hashed, rest): (Vec<Item>, Vec<Item>) = items.into_iter().partition(|it| hashes.contains_key(&it.id));
+    let h: Vec<u64> = hashed.iter().map(|it| hashes[&it.id]).collect();
+    let dist = |a: usize, b: usize| (h[a] ^ h[b]).count_ones();
+    let n = h.len();
+
+    // Union-find over all close pairs, a block of rows at a time so a loose
+    // threshold on a big library never holds every pair in memory.
+    let mut parent: Vec<usize> = (0..n).collect();
+    fn find(p: &mut [usize], mut x: usize) -> usize {
+        while p[x] != x {
+            p[x] = p[p[x]];
+            x = p[x];
+        }
+        x
+    }
+    for start in (0..n).step_by(512) {
+        let pairs: Vec<(usize, usize)> = (start..(start + 512).min(n))
+            .into_par_iter()
+            .flat_map_iter(|i| (i + 1..n).filter(move |&j| dist(i, j) <= max_bits).map(move |j| (i, j)))
+            .collect();
+        for (i, j) in pairs {
+            let (a, b) = (find(&mut parent, i), find(&mut parent, j));
+            if a != b {
+                parent[a.max(b)] = a.min(b);
+            }
+        }
+    }
+    let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
+    for i in 0..n {
+        let r = find(&mut parent, i);
+        groups.entry(r).or_default().push(i);
+    }
+    // Members are in date order (indexes ascending), so a group's first
+    // member is its oldest picture.
+    let mut groups: Vec<Vec<usize>> = groups.into_values().collect();
+    groups.sort_by(|a, b| b.len().cmp(&a.len()).then(a[0].cmp(&b[0])));
+
+    let mut order: Vec<(usize, Option<(i64, i64)>)> = Vec::with_capacity(n);
+    let mut group_no = 0;
+    for g in &groups {
+        if g.len() < 2 {
+            order.push((g[0], None));
+            continue;
+        }
+        group_no += 1;
+        let tag = Some((group_no, g.len() as i64));
+        // Greedy nearest-neighbour chain from the oldest picture.
+        let mut left: Vec<usize> = g[1..].to_vec();
+        let mut cur = g[0];
+        order.push((cur, tag));
+        while !left.is_empty() {
+            let k = (0..left.len()).min_by_key(|&k| (dist(cur, left[k]), left[k])).unwrap();
+            cur = left.remove(k);
+            order.push((cur, tag));
+        }
+    }
+
+    let mut slots: Vec<Option<Item>> = hashed.into_iter().map(Some).collect();
+    let mut out: Vec<Item> = Vec::with_capacity(slots.len() + rest.len());
+    for (i, tag) in order {
+        let mut it = slots[i].take().expect("each picture placed once");
+        if let Some((g, size)) = tag {
+            it.sim_group = Some(g);
+            it.sim_size = Some(size);
+        }
+        out.push(it);
+    }
+    out.extend(rest);
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -768,9 +896,15 @@ pub fn stats(conn: &Connection) -> serde_json::Value {
     let tagged = q(&format!("SELECT COUNT(DISTINCT media_id) FROM media_tags x WHERE {ON_DISK}"));
     let favorites = q(&format!("SELECT COUNT(*) FROM annotations x WHERE favorite = 1 AND {ON_DISK}"));
     let with_notes = q(&format!("SELECT COUNT(*) FROM annotations x WHERE notes <> '' AND {ON_DISK}"));
+    // Duplicate groups across folders (exact + same photo at another quality),
+    // as counted by the last duplicates scan.
+    let dup_found: Option<serde_json::Value> = conn
+        .query_row("SELECT value FROM app_meta WHERE key = 'dup_summary_cache'", [], |r| r.get::<_, String>(0))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok());
     serde_json::json!({
         "total": total, "images": images, "videos": videos,
-        "missing": missing, "dupGroups": dup_groups,
+        "missing": missing, "dupGroups": dup_groups, "dupFound": dup_found,
         "present": present, "deleted": deleted, "tagged": tagged, "favorites": favorites, "withNotes": with_notes,
     })
 }
@@ -788,5 +922,37 @@ mod tests {
         assert_eq!(fts_query(r#"we"ird"#), r#""weird"*"#);
         assert_eq!(fts_query("   "), "");
         assert_eq!(fts_query(r#""unterminated phrase"#), r#""unterminated phrase""#);
+    }
+
+    fn item(id: i64) -> super::Item {
+        super::Item {
+            id, sha256: String::new(), kind: "image".into(), ext: "jpg".into(), bytes: 0,
+            width: None, height: None, taken_at: None, date_source: None, camera: None,
+            path: String::new(), occ_count: 1, copies: 1, in_dup_group: false, missing: false,
+            thumb_path: None, rating: 0, favorite: false, color_label: None, has_notes: false,
+            tags: None, deleted: false, ai_reviewed: false, ai_pending: 0, sim_group: None, sim_size: None,
+        }
+    }
+
+    #[test]
+    fn similarity_groups_look_alikes() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE media (id INTEGER PRIMARY KEY, kind TEXT, phash INTEGER)").unwrap();
+        // 1 and 3 are a pair, 4/2/6 a chain (4~2, 2~6 within 2 bits; 4..6 is 4 bits),
+        // 5 is unique, 7 has no fingerprint.
+        for (id, h) in [(1, 0x0000_0000_0000_00FFu64), (2, 0xFF00_0000_0000_0003), (3, 0x0000_0000_0000_00FE),
+                        (4, 0xFF00_0000_0000_0000), (5, 0x00FF_FF00_0000_0000), (6, 0xFF00_0000_0000_000F)] {
+            conn.execute("INSERT INTO media VALUES (?1, 'image', ?2)", rusqlite::params![id, h as i64]).unwrap();
+        }
+        let items = (1..=7).map(item).collect();
+        let out = super::order_by_similarity(&conn, items, 2);
+        let ids: Vec<i64> = out.iter().map(|i| i.id).collect();
+        // Biggest group first, chained from its oldest picture by nearest neighbour.
+        assert_eq!(ids, vec![2, 4, 6, 1, 3, 5, 7]);
+        let groups: Vec<_> = out.iter().map(|i| (i.sim_group, i.sim_size)).collect();
+        assert_eq!(groups[0], (Some(1), Some(3)));
+        assert_eq!(groups[3], (Some(2), Some(2)));
+        assert_eq!(groups[5], (None, None));
+        assert_eq!(groups[6], (None, None));
     }
 }

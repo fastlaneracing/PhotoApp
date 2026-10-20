@@ -1,0 +1,14 @@
+# Photo library roots — edit freely; scanner reads this file on every run.
+# Exclusions are path prefixes (case-insensitive), skipped during walk.
+# NOTE: top-level keys must come BEFORE table headers in TOML.
+#
+# Lane's scope (2026-10-11): E:\Photos ONLY. D:\Strata and Downloads are
+# intentionally not cataloged.
+
+exclusions = [
+  "D:/ComfyUI-Easy-Install",
+]
+
+[[roots]]
+name = "E-Photos"
+path = "E:/Photos"

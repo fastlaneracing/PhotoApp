@@ -202,7 +202,16 @@ fn handle(mut stream: TcpStream) -> std::io::Result<()> {
             let mut conn = open_db();
             let cfg = load_cfg();
             match crate::library::call(&mut conn, &cfg, &cmd, &args) {
-                Ok(v) => respond_json(&mut stream, 200, &v.to_string()),
+                Ok(v) => {
+                    // Browser-dev mode has no background thread: catalog a newly
+                    // added / resumed folder right here.
+                    if v.get("syncNeeded").and_then(|x| x.as_bool()) == Some(true) {
+                        let cfg = load_cfg();
+                        let _ = crate::library::sync(&mut conn, &cfg);
+                        let _ = crate::dedupe::auto_resolve(&mut conn, &cfg);
+                    }
+                    respond_json(&mut stream, 200, &v.to_string())
+                }
                 Err(e) => respond_json(&mut stream, 400, &json_err(&e)),
             }
         }
@@ -332,6 +341,7 @@ fn parse_filter(qs: &str) -> Filter {
                 "takenAsc" => Some(crate::query::Sort::TakenAsc),
                 "ratingDesc" => Some(crate::query::Sort::RatingDesc),
                 "editedDesc" => Some(crate::query::Sort::EditedDesc),
+                "similar" => Some(crate::query::Sort::Similar),
                 _ => Some(crate::query::Sort::TakenDesc),
             },
             "limit" => f.limit = v.parse().ok(),

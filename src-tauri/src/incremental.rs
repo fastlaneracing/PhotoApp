@@ -57,7 +57,8 @@ pub fn diff_scan(conn: &Connection, cfg: &Config) -> Diff {
     // Safety: a root that is not readable, or that walks to ZERO media files
     // while the catalog says it holds some, is treated as offline. Without
     // this, launching with E: unplugged marked the whole library missing.
-    let mut unreachable: Vec<String> = Vec::new();
+    // Paused folders are left exactly as they are, like an unplugged drive.
+    let mut unreachable: Vec<String> = cfg.paused.iter().map(|r| r.name.clone()).collect();
     for root in &cfg.roots {
         let readable = std::fs::read_dir(Path::new(&root.path)).is_ok();
         let rk = normalized_str(&root.path);
@@ -123,11 +124,9 @@ pub fn diff_scan(conn: &Connection, cfg: &Config) -> Diff {
         .collect();
     new_paths.extend(changed);
 
-    Diff { new_paths, missing_paths: missing, unreachable_roots: unreachable }
-}
-
-pub fn normalized(p: &Path) -> String {
-    normalized_str(&p.to_string_lossy().to_string())
+    // Report real outages only; paused folders are skipped on purpose.
+    let unreachable_roots = unreachable.into_iter().filter(|n| !cfg.paused.iter().any(|p| &p.name == n)).collect();
+    Diff { new_paths, missing_paths: missing, unreachable_roots }
 }
 
 /// Mark an occurrence as missing (file deleted from disk). The media row is
@@ -171,9 +170,7 @@ pub fn process_file(conn: &mut Connection, cfg: &Config, path: &Path) -> Result<
         .unwrap_or(0);
 
     let root_name = cfg
-        .roots
-        .iter()
-        .find(|r| normalized(path).starts_with(&normalized_str(&r.path)))
+        .root_for_path(&path.to_string_lossy())
         .map(|r| r.name.clone())
         .unwrap_or_else(|| "unknown".to_string());
 

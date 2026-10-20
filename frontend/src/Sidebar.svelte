@@ -126,6 +126,17 @@
     </button>
   {/each}
 
+  {#if lib.folders.length > 1}
+    <div class="h">Library folders</div>
+    {#each lib.folders as f (f.name)}
+      <button class="item" class:on={filter.root === f.name} class:paused={!f.enabled}
+        onclick={() => { const n = { ...filter }; if (n.root === f.name) delete n.root; else n.root = f.name; onfilter(n); }}
+        title="{f.path}{f.enabled ? '' : ' (paused)'}{f.protected ? ' · protected' : ''} — click to show only items with a copy here">
+        <span class="ic">{f.protected ? '🔒' : f.enabled ? '▭' : '⏸'}</span><span class="lb">{f.name}</span><span class="n">{f.items.toLocaleString()}</span>
+      </button>
+    {/each}
+  {/if}
+
   <div class="h">Albums <button class="add" onclick={newAlbum} title="New album">＋</button></div>
   {#if !lib.albums.length}<div class="hint">Group photos for a job, customer or event.</div>{/if}
   {#each lib.albums as a (a.id)}
@@ -198,6 +209,7 @@
 </nav>
 
 <style>
+  .item.paused { opacity: 0.6; }
   .side {
     width: 230px; flex: 0 0 230px; background: var(--panel); border-right: 1px solid var(--border);
     overflow-y: auto; padding: 8px 8px 40px; box-sizing: border-box;

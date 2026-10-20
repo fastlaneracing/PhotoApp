@@ -31,7 +31,8 @@ Identity is **content**, not path:
 | `ai_jobs`, `ai_suggestions`, `ai_responses` | AI runs, proposed changes awaiting approval, raw model replies. |
 | `op_journal` | File moves / duplicate staging, for undo. |
 | `media_fts` | FTS5 index over path, camera, notes, tags, albums and AI description. |
-| `app_meta` | Settings (incl. AI connection) and one-time migration markers. |
+| `app_meta` | Settings (AI connection, `dup_settings`), cached duplicate counts, one-time migration markers. |
+| `dedupe_runs`, `dedupe_log`, `dup_ignore` | Duplicate clean-ups (one run = one undo), each file removed or moved, and groups marked "not duplicates". |
 
 Because notes and tags hang off `media`, they survive renames and moves made anywhere. When a file is edited in place its content hash changes; the change is queued in `pending_carry` and, once every changed file has been seen, annotations are carried to the new content only if the old content is gone (a rename shuffle never mixes notes between photos).
 
@@ -47,10 +48,20 @@ These are invariants — please keep them:
 
 1. Photo contents are never modified.
 2. File moves are previewed, never overwrite, and are journaled for undo; cross-drive moves copy then remove.
-3. Deletes go to the Windows Recycle Bin only, after verifying the drive has one; catalog rows are kept so a restore brings notes and tags back.
+3. Deletes go to the Windows Recycle Bin only, after verifying the drive has one; catalog rows are kept so a restore brings notes and tags back. Nothing is ever deleted or moved from a protected folder.
 4. Removing catalog rows for vanished files backs up the catalog first.
 5. The AI never writes directly: it creates `ai_suggestions`; applying one goes through the normal edit functions inside `history::with_source(Source::ai(..))`, so it lands in `change_log` and can be undone.
 6. Schema migrations are additive and idempotent, run once per process inside `BEGIN IMMEDIATE`.
+
+## Library folders and duplicates (`settings.rs`, `dedupe.rs`)
+
+- **Folders** live in `config.toml` (`[[roots]]`, file order = priority, `enabled`, `protected`). `scanner::load_config` splits them into active `roots` and `paused`, so every walker and the watcher see active folders only; paused folders are treated like an offline drive by the sync. Settings rewrites the file (validated round-trip, `.bak` kept); the Tauri layer then widens the asset scope, signals the watcher to re-watch (`watcher::folders_changed`), and runs a background sync.
+- **Fingerprints**: per image, `media.px_w/px_h` (real pixel size from the original's header, EXIF rotation applied) and `media.phash` (64-bit difference hash of the cached thumbnail, turned upright). Computed once per content after each sync.
+- **Groups**: identical copies (one media row, several present paths) plus images whose fingerprints differ by ≤ 3 / 6 / 10 bits, have the same shape (±3 %) and, when both have a camera or file-name date, the same date. Every picture must be close to the group's keeper (no chaining). Groups are classified `exact`, `copies` (each other picture is clearly worse) or `similar` (look-alikes, review only).
+- **Keeper**: quality (pixels → camera data → lossless → bytes) then original name then folder priority, or folder priority first.
+- **Clean-up** (`dups.resolve`): re-validates against current groups, never touches protected folders, verifies the Recycle Bin per drive, journals every file in `dedupe_log`, merges annotations into the keeper under `history::Source { dedupe }` (change_log `job_id = -run`), and marks fully removed pictures deleted. `dups.undo` restores from the bin or the review folder, re-catalogs, and calls `history::undo_job(-run)`.
+
+- **Similarity sort** (`query::order_by_similarity`, sort `similar`): the filtered items are regrouped in Rust after the SQL query. Images whose `phash` differ by ≤ `simThreshold` bits (default 10) are linked with union-find (chaining allowed — browsing only); groups are ordered largest first and each group is laid out as a greedy nearest-neighbour chain from its oldest picture. Items carry `simGroup` / `simSize` for the tile badge. Cost is O(n²) popcounts over the matching images, done in parallel blocks.
 
 ## AI pipeline (`ai.rs`)
 
@@ -70,7 +81,7 @@ These are invariants — please keep them:
 | `Inspector.svelte`, `Annotator.svelte`, `BulkEditor.svelte`, `ItemAI.svelte` | Right panel: single item, bulk edit, AI suggestions + history |
 | `Viewer.svelte` | Full-screen viewer, zoom/pan, rename/move |
 | `AIView.svelte`, `AISettings.svelte`, `AskBar.svelte` | AI tab, settings, Ask box |
-| `ManageView.svelte`, `DupsView.svelte` | Maintenance, tag/album management, duplicates |
+| `ManageView.svelte`, `DupsView.svelte`, `SettingsView.svelte` | Maintenance, tag/album management, duplicates, library folders + duplicate settings |
 | `lib.js`, `store.svelte.js` | Back-end bridge (`call(cmd, args)`), shared state |
 
-All library operations go through one command, `call(cmd, args)` → `library::call` (and `history::call` / `ai::call`), e.g. `tags.add`, `notes.set`, `bulk.moveApply`, `items.delete`, `ai.review`, `history.undoJob`.
+All library operations go through one command, `call(cmd, args)` → `library::call` (and `history::call` / `ai::call`), e.g. `tags.add`, `notes.set`, `bulk.moveApply`, `items.delete`, `ai.review`, `history.undoJob`, `folders.add`, `dups.scan`, `dups.resolve`, `dups.undo`.

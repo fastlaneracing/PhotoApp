@@ -12,6 +12,9 @@
   const year = $derived((item.takenAt || '').slice(0, 4));
   const isVideo = $derived(item.kind === 'video');
 
+  // Neighbouring groups get clearly different hues so boundaries stand out.
+  const simColor = (g) => `hsl(${(g * 137.5) % 360} 70% 55% / 0.92)`;
+
   function fmtBytes(b) {
     if (!b) return '';
     if (b >= 1e6) return (b / 1e6).toFixed(1) + ' MB';
@@ -53,6 +56,10 @@
 
     {#if isVideo && !item.missing}
       <span class="badge kind">▶</span>
+    {/if}
+    {#if item.simGroup}
+      <span class="simbar" style="background: {simColor(item.simGroup)}"></span>
+      <span class="badge sim" style="background: {simColor(item.simGroup)}" title="Look-alike group {item.simGroup} ({item.simSize} pictures)">≈{item.simGroup} · {item.simSize}</span>
     {/if}
     {#if item.inDupGroup && item.copies > 1}
       <span class="badge dup" title="{item.copies} identical copies on disk">×{item.copies}</span>
@@ -136,6 +143,8 @@
   }
   .badge.kind { right: 6px; background: rgba(10,12,16,0.7); color: #fff; }
   .badge.dup { left: 6px; background: rgba(244,123,32,0.9); color: #1a1206; }
+  .badge.sim { left: 6px; top: auto; bottom: 30px; color: #10131a; }
+  .simbar { position: absolute; left: 0; right: 0; top: 0; height: 4px; }
   .badge.miss { right: 6px; background: rgba(240,80,60,0.85); color: #fff; }
   .caption { padding: 0 2px; }
   .name {
